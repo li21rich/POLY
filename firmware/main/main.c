@@ -7,9 +7,13 @@
 #include "esp_netif.h"
 #include "esp_event.h"
 #include "esp_mac.h"
-#include "driver.h"
-#include "protocol.h"
+#include "driver.h" 
 #include "wifi.h"
+
+typedef struct {
+    uint8_t cmd_type;
+    int32_t val;
+} espnow_packet_t;
 
 #define BUILD_AS_HOST
 
@@ -25,7 +29,9 @@ static peer_entry_t peer_table[MAX_PEERS] = {//first C3 MAC was: 88:56:a6:2a:14:
 };
 
 static void host_espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
-    printf("ESP-NOW send status: %s\n", status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+    printf("ESP-NOW Send Status to %02x...: %s\n", 
+           tx_info->des_addr[0], 
+           status == ESP_NOW_SEND_SUCCESS ? "SUCCESS" : "FAIL");
 }
 static void host_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     printf("ESP-NOW recv len=%d\n", len);
@@ -37,7 +43,7 @@ void host_espnow_init(void) {
     ESP_ERROR_CHECK(esp_now_register_recv_cb(host_espnow_recv_cb));
     for (int i = 0; i < MAX_PEERS; i++) {
         if (!peer_table[i].active) continue;
-        esp_now_peer_info_t peer = { .channel = 1, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+        esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
         memcpy(peer.peer_addr, peer_table[i].mac, 6);
         ESP_ERROR_CHECK(esp_now_add_peer(&peer));
     }
@@ -90,34 +96,41 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
 }
 
 #endif
-
 void app_main(void) {
+    // 1. Initialize Peripherals (LED/PWM)
     driver_init();
     
-#ifdef BUILD_AS_HOST
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    printf("S3 MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    // 2. Initialize System Stack (Must be called once)
+    wifi_init_global();
     
+#ifdef BUILD_AS_HOST
+    // 3. Configure Wi-Fi Station
     wifi_init_sta();
-    while (wifi_get_ip() == 0) {
-        printf("Waiting for Wi-Fi...\n");
+    
+    // 4. Wait for IP before initializing network-dependent services
+    int attempts = 0;
+    while (wifi_get_ip() == 0 && attempts < 30) {
+        printf("Waiting for Wi-Fi... (%d)\n", ++attempts);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    
+    // 5. Initialize ESP-NOW and MQTT
     host_espnow_init();
+    
     esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://54.36.178.49:1883" };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
-#else
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    printf("C3 MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     
-    wifi_init_espnow();
+#else
+    // Peripheral Logic (No Wi-Fi STA needed, just ESP-NOW)
+    ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
-    printf("Node ready. Waiting for ESP-NOW packets...\n");
+    printf("C3 Node ready.\n");
 #endif
-    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
