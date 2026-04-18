@@ -19,7 +19,7 @@ const DRAG_THRESHOLD = 5;
 
 const PanelCarousel: React.FC<PanelCarouselProps> = ({
   panels,
-  radius = 395,
+  radius = 355,
   panelWidth = 250 * 1.18,
   panelHeight = 200 * 1.18,
   className = "",
