@@ -52,7 +52,7 @@ const Home = () => {
         </button>
       </div>
 
-      <SlideIn direction="bottom" delay={1000} duration={1500}>
+      <SlideIn direction="bottom" delay={100} duration={2500}>
         <div id="products" ref={carouselRef}>
           <PanelCarousel panels={PORTFOLIO_PROJECTS} className="my-90 overflow-auto" />
         </div>

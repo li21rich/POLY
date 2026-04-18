@@ -49,7 +49,7 @@ void driver_set_pwm(int duty_percent) {
 
 void driver_set_led(bool on) {
     if (on) {
-        led_strip_set_pixel(led_strip, 0, 125, 255, 0); // White
+        led_strip_set_pixel(led_strip, 0, 255, 125, 125); // RED
     } else {
         led_strip_set_pixel(led_strip, 0, 0, 0, 0);       // OFF
     }

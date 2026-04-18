@@ -5,5 +5,5 @@
       <stop offset="100%" stop-color="#ef0000"/>
     </linearGradient>
   </defs>
-  <text x="40" y="111" font-family="Arial, sans-serif" font-size="140" font-weight="bold" fill="url(#gradRL)">rl</text>
+  <text x="40" y="111" font-family="Arial, sans-serif" font-size="140" font-weight="bold" fill="url(#gradRL)">p</text>
 </svg>

@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, useLocation } from "react-route
 
 import Home from "./pages/Home";
 import Contact from "./pages/projects/Contact";
+import ConnectAndCode from "./pages/projects/ConnectAndCode";
 import Navbar from "./components/Navbar"
 import type { NavLinkItem } from "./components/Navbar";
 import Cursor from "./components/Cursor";
@@ -10,6 +11,7 @@ const navLinks: NavLinkItem[] = [
   { id: "0", title: "Home", to: "/" },
 { id: "1", title: "Products", to: "/", scrollToId: "products" },
 { id: "2", title: "Find Us", to: "/contact" },
+{ id: "3", title: "CONNECT & CODE", to: "/go" },
 ];
 const ScrollToTop: React.FC = () => {
   const { pathname } = useLocation();
@@ -28,6 +30,7 @@ const App: React.FC = () => {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/contact" element={<Contact />} />
+          <Route path="/go" element={<ConnectAndCode />} />
         </Routes>
         <div
           className="fixed bottom-0 left-0 w-full pb-3 py-14 pointer-events-none z-50"

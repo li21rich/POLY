@@ -30,7 +30,7 @@ const PanelCarousel: React.FC<PanelCarouselProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [isMobile, setIsMobile] = useState(false);
-  const [isFlattened, setIsFlattened] = useState(false);
+  const [isFlattened] = useState(false);
 
   const startX = useRef(0);
   const lastX = useRef(0);
