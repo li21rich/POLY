@@ -16,17 +16,20 @@ typedef struct {
 } espnow_packet_t;
 
 #define BUILD_AS_HOST
-
+void print_mac_address(void) {
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    printf("\n***********************************\n");
+    printf("DEVICE MAC ADDRESS: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    printf("***********************************\n\n");
+}
 #ifdef BUILD_AS_HOST
 #include "cJSON.h"
 #include "mqtt_client.h"
 
 #define MAX_PEERS 8
 typedef struct { uint8_t mac[6]; bool active; } peer_entry_t;
-
-static peer_entry_t peer_table[MAX_PEERS] = {//first C3 MAC was: 88:56:a6:2a:14:24
-    { .mac = {0x88, 0x56, 0xa6, 0x2a, 0x14, 0x24}, .active = true },
-};
 
 static void host_espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
     printf("ESP-NOW Send Status to %02x...: %s\n", 
@@ -41,28 +44,35 @@ void host_espnow_init(void) {
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_send_cb(host_espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(host_espnow_recv_cb));
-    for (int i = 0; i < MAX_PEERS; i++) {
-        if (!peer_table[i].active) continue;
-        esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
-        memcpy(peer.peer_addr, peer_table[i].mac, 6);
-        ESP_ERROR_CHECK(esp_now_add_peer(&peer));
-    }
 }
-
 void handle_mqtt_message(char *payload) {
     cJSON *root = cJSON_Parse(payload);
     if (!root) return;
+    
     cJSON *cmd = cJSON_GetObjectItem(root, "cmd");
-    cJSON *target = cJSON_GetObjectItem(root, "target");
+    cJSON *target = cJSON_GetObjectItem(root, "target"); // Expects MAC string "88:56:..."
     cJSON *val = cJSON_GetObjectItem(root, "val");
+
     if (cJSON_IsString(cmd) && cJSON_IsString(target) && cJSON_IsNumber(val)) {
         if (strcmp(target->valuestring, "host") == 0) {
             if (strcmp(cmd->valuestring, "led") == 0) driver_set_led(val->valueint > 0);
-        } else if (strcmp(target->valuestring, "c3_node") == 0) {
-            uint8_t cmd_type = (strcmp(cmd->valuestring, "led") == 0) ? 1 : 0;
-            espnow_packet_t packet = { .cmd_type = cmd_type, .val = val->valueint };
-            for (int i = 0; i < MAX_PEERS; i++) {
-                if (peer_table[i].active) esp_now_send(peer_table[i].mac, (uint8_t *)&packet, sizeof(packet));
+        } else {
+            // Convert MAC string to bytes
+            uint8_t mac[6];
+            if (sscanf(target->valuestring, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx", 
+                &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
+                
+                // Add peer dynamically if not already added
+                esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+                memcpy(peer.peer_addr, mac, 6);
+                
+                if (esp_now_is_peer_exist(mac) == false) {
+                    ESP_ERROR_CHECK(esp_now_add_peer(&peer));
+                }
+
+                uint8_t cmd_type = (strcmp(cmd->valuestring, "led") == 0) ? 1 : 0;
+                espnow_packet_t packet = { .cmd_type = cmd_type, .val = val->valueint };
+                esp_now_send(mac, (uint8_t *)&packet, sizeof(packet));
             }
         }
     }
@@ -86,19 +96,23 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 }
 
 #else
-
+// Inside main.c (C3 Peripheral)
 void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
     espnow_packet_t *packet = (espnow_packet_t *)data;
-    printf("Received ESP-NOW cmd: %d, val: %d\n", (int)packet->cmd_type, (int)packet->val);
-    if (packet->cmd_type == 1) driver_set_led(packet->val > 0);
-    else if (packet->cmd_type == 0) driver_set_pwm(packet->val);
+    printf("DEBUG: Received Cmd: %d, Val: %d\n", (int)packet->cmd_type, (int)packet->val);
+    switch(packet->cmd_type) {
+        case 1: driver_set_led(packet->val > 0); break;
+        case 0: driver_set_pwm(packet->val); break;
+        case 2: driver_set_gyro_mode(packet->val > 0); break; 
+        default: printf("Unknown command: %d\n", packet->cmd_type);
+    }
 }
-
 #endif
 void app_main(void) {
     // 1. Initialize Peripherals (LED/PWM)
     driver_init();
+    print_mac_address();
     
     // 2. Initialize System Stack (Must be called once)
     wifi_init_global();
@@ -123,7 +137,8 @@ void app_main(void) {
     esp_mqtt_client_start(client);
     
 #else
-    // Peripheral Logic (No Wi-Fi STA needed, just ESP-NOW)
+    wifi_init_espnow(); 
+    
     ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));

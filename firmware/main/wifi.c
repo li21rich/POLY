@@ -53,3 +53,12 @@ void wifi_init_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_connect());
 }
+
+void wifi_init_espnow(void) {
+    // Basic driver setup is required even for ESP-NOW
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA)); // ESP-NOW requires STA or AP mode
+    ESP_ERROR_CHECK(esp_wifi_start());
+}
