@@ -9,7 +9,7 @@
 #include <stdio.h>
 
 static const char *TAG = "6dof_node";
-
+// DEVICE MAC ADDRESS: 88:56:a6:2c:5d:24
 // ---- pins / bus ----
 #define PIN_LED         10
 #define I2C_SDA         8

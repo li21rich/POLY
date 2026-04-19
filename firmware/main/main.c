@@ -21,7 +21,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-#define BUILD_AS_HOST
+//#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -149,7 +149,7 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
     switch(packet->cmd_type) {
         case 1: driver_set_led(packet->val); break;
         case 0: driver_set_pwm(packet->val); break;
-        case 2:
+        case 2: {
             imu_data_t imu;
             if (driver_get_imu(&imu)) {
                 imu_packet_t pkt = {
@@ -161,7 +161,7 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
                 printf("IMU not ready\n");
             }
             break;
-        default: printf("Unknown command: %d\n", packet->cmd_type);
+        }
     }
 }
 #endif
@@ -186,7 +186,7 @@ void app_main(void) {
     
     host_espnow_init();
     
-    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://172.20.10.14:1883" };
+    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://54.36.178.49:1883" };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
