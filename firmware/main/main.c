@@ -10,7 +10,11 @@
 #include "driver.h" 
 #include "wifi.h" 
 #include "esp_log.h"
-// FLASH CHECK LIST: comment/uncomment BUILD_AS_HOST, swap CMakeList, switch port & esp.
+#include "mqtt_client.h" // Added back for global handle
+#include "cJSON.h"
+
+// Global handle to allow access in while(1) loop
+static esp_mqtt_client_handle_t client = NULL;
 
 typedef struct {
     uint8_t cmd_type;
@@ -22,7 +26,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-//#define BUILD_AS_HOST
+#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -32,9 +36,6 @@ void print_mac_address(void) {
 }
 
 #ifdef BUILD_AS_HOST
-#include "cJSON.h"
-#include "mqtt_client.h"
-
 static void host_espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status) {
     printf("ESP-NOW Send Status to %02x...: %s\n", 
            tx_info->des_addr[0], 
@@ -59,14 +60,12 @@ void host_espnow_init(void) {
     ESP_ERROR_CHECK(esp_now_register_send_cb(host_espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(host_espnow_recv_cb));
 
-    // Peer 1: POLY Motor
     uint8_t motor_mac[] = {0xac, 0xeb, 0xe6, 0x56, 0x4a, 0xd0};
     esp_now_peer_info_t motor_peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
     memcpy(motor_peer.peer_addr, motor_mac, 6);
     esp_now_add_peer(&motor_peer);
     printf("Registered Motor Peer\n");
 
-    // Peer 2: POLY Sense
     uint8_t sense_mac[] = {0x88, 0x56, 0xa6, 0x2c, 0x5d, 0x24};
     esp_now_peer_info_t sense_peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
     memcpy(sense_peer.peer_addr, sense_mac, 6);
@@ -167,7 +166,7 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
     switch(packet->cmd_type) {
         case 1: driver_set_led(packet->val); break;
         case 0: driver_set_pwm(packet->val); break;
-        case 2: imu_reply_pending = true; break;   // defer, don't send from here
+        case 2: imu_reply_pending = true; break;
     }
 }
 #endif
@@ -193,21 +192,16 @@ void app_main(void) {
     }
     
     host_espnow_init();
-    // Change your MQTT configuration in firmware
-    esp_mqtt_client_config_t mqtt_cfg = { 
-        .broker.address.uri = "ws://test.mosquitto.org:8080" 
-    };
-    esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
+    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "ws://test.mosquitto.org:8080" };
+    // Assigning to global handle instead of local variable
+    client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
     
 #else
     wifi_init_espnow();
-
-    // Scan for the AP the host is on, then lock to its channel.
-    // This is the robust way — works across any router change.
     wifi_scan_config_t scan = {
-        .ssid = (uint8_t *)"StarkHacks-2",   // must match host's SSID
+        .ssid = (uint8_t *)"StarkHacks-2",
         .bssid = NULL,
         .channel = 0,
         .show_hidden = false,
@@ -226,13 +220,9 @@ void app_main(void) {
         printf(">>> AP scan failed, falling back to ch 11\n");
         ESP_ERROR_CHECK(esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE));
     }
-    uint8_t prim; wifi_second_chan_t sec;
-    esp_wifi_get_channel(&prim, &sec);
-    printf("C3 actual channel: %d\n", prim);
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
     ESP_ERROR_CHECK(esp_now_register_send_cb(c3_send_cb));
-    printf("C3 Node ready.\n");
 #endif
     while (1) {
 #ifndef BUILD_AS_HOST
@@ -240,19 +230,23 @@ void app_main(void) {
             imu_reply_pending = false;
             imu_data_t imu;
             if (driver_get_imu(&imu)) {
-                imu_packet_t pkt = {
-                    .ax = imu.ax, .ay = imu.ay, .az = imu.az,
-                    .gx = imu.gx, .gy = imu.gy, .gz = imu.gz,
-                };
+                imu_packet_t pkt = { .ax = imu.ax, .ay = imu.ay, .az = imu.az, .gx = imu.gx, .gy = imu.gy, .gz = imu.gz };
                 esp_err_t r = esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
                 printf("C3 reply send: %s\n", esp_err_to_name(r));
-            } else {
-                printf("IMU not ready\n");
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
 #else
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Button logic
+        if (driver_get_button() && client != NULL) {
+            esp_mqtt_client_publish(client, "poly/telemetry",
+                "{\"mac\":\"host\",\"state\":\"pressed\"}", 0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(300));
+            esp_mqtt_client_publish(client, "poly/telemetry",
+                "{\"mac\":\"host\",\"state\":\"released\"}", 0, 0, 0);
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
 #endif
     }
 }

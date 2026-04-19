@@ -1,89 +1,31 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
-  Plus,
-  Trash,
-  RotateCw,
-  Lightbulb,
-  Box,
-  Move,
-  PlusCircle,
-  Terminal,
-  GripVertical,
+  Plus, Trash, RotateCw, Lightbulb, Box, Move, PlusCircle, Terminal, GripVertical,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
+  DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors,
 } from '@dnd-kit/core';
 import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  horizontalListSortingStrategy,
-  useSortable,
+  arrayMove, SortableContext, sortableKeyboardCoordinates, horizontalListSortingStrategy, useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import mqtt, { MqttClient } from 'mqtt';
-const MQTT_WS_URL = 'wss://test.mosquitto.org:8081';
 
+const MQTT_WS_URL = 'wss://test.mosquitto.org:8081';
 const TOPIC_CMD = 'poly/cmd';
 const TOPIC_TELEMETRY = 'poly/telemetry';
-
 const GYRO_POLL_MS = 500;
 const TRIGGER_RETRIGGER_MS = 1500;
 
 type CmdType = 'led' | 'pwm' | 'gyro';
-
-type PolyCommand = {
-  cmd: CmdType;
-  target: string;
-  val: number | string;
-};
-
-type ImuSample = {
-  mac: string;
-  ax: number; ay: number; az: number;
-  gx: number; gy: number; gz: number;
-  ts: number;
-};
-
-type ButtonSample = {
-  mac: string;
-  state: 'pressed' | 'released';
-  ts: number;
-};
-
-type Action = {
-  id: string;
-  nodeId: string;
-  item: 'Servo' | 'LED';
-  value: number | string;
-  delay: number;
-};
-
-type Trigger = {
-  nodeId: string;
-  item: 'Gyro' | 'Button' | 'Start';
-  logicType: 'IF' | 'WHILE' | 'START';
-  mode: 'Tilted' | 'Shaken' | 'Pressed' | 'Auto';
-  threshold: number | null;
-};
-
-type Flow = {
-  id: string;
-  trigger: Trigger;
-  actions: Action[];
-};
-
-type LogEntry = {
-  id: string;
-  direction: 'out' | 'in';
-  msg: string;
-};
+type PolyCommand = { cmd: CmdType; target: string; val: number | string };
+type ImuSample = { mac: string; ax: number; ay: number; az: number; gx: number; gy: number; gz: number; ts: number };
+type ButtonSample = { mac: string; state: 'pressed' | 'released'; ts: number };
+type Action = { id: string; nodeId: string; item: 'Servo' | 'LED'; value: number | string; delay: number };
+type Trigger = { nodeId: string; item: 'Gyro' | 'Button' | 'Start'; logicType: 'IF' | 'WHILE' | 'START'; mode: 'Tilted' | 'Shaken' | 'Pressed' | 'Auto'; threshold: number | null };
+type Flow = { id: string; trigger: Trigger; actions: Action[] };
+type LogEntry = { id: string; direction: 'out' | 'in'; msg: string };
 
 const COLORS = [
   { name: 'Red', hex: '#FF0000' },
@@ -94,9 +36,9 @@ const COLORS = [
 ];
 
 const NODES: Record<string, { label: string; inputs: string[]; outputs: string[] }> = {
-  'POLY One':   { label: 'POLY One',   inputs: ['Button'],       outputs: ['Servo', 'LED'] },
+  'POLY One':   { label: 'POLY One',   inputs: ['Button'],         outputs: ['Servo', 'LED'] },
   'POLY Sense': { label: 'POLY Sense', inputs: ['Gyro', 'Button'], outputs: ['LED'] },
-  'POLY Home':  { label: 'POLY Home',  inputs: [],               outputs: ['LED'] },
+  'POLY Home':  { label: 'POLY Home',  inputs: ['Button'],         outputs: ['LED'] },
 };
 
 const ITEM_ICONS: Record<string, React.ReactNode> = {
@@ -114,16 +56,14 @@ const ITEM_ICONS: Record<string, React.ReactNode> = {
 const NODE_MACS: Record<string, string> = {
   'POLY One':   'ac:eb:e6:56:4a:d0',
   'POLY Sense': '88:56:a6:2c:5d:24',
-  'POLY Home':  'host'
+  'POLY Home':  'host',
 };
 
 const GYRO_MODES = ['Tilted', 'Shaken'];
 
 function hexToInt(hex: string): number {
   const s = (hex || '#000000').replace('#', '');
-  const n = parseInt(s.length === 3
-    ? s.split('').map((c) => c + c).join('')
-    : s, 16);
+  const n = parseInt(s.length === 3 ? s.split('').map((c) => c + c).join('') : s, 16);
   return Number.isFinite(n) ? n : 0;
 }
 
@@ -136,7 +76,7 @@ function shakeMagnitude(s: ImuSample): number {
   return Math.sqrt(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz);
 }
 
-function useMqtt(url: string) {
+function useMqtt(url: string, onButtonPress?: (mac: string) => void) {
   const clientRef = useRef<MqttClient | null>(null);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'reconnecting' | 'error'>('connecting');
   const imuRef = useRef<Record<string, ImuSample>>({});
@@ -144,6 +84,8 @@ function useMqtt(url: string) {
   const [, forceTick] = useState(0);
   const logsRef = useRef<LogEntry[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const onButtonPressRef = useRef(onButtonPress);
+  useEffect(() => { onButtonPressRef.current = onButtonPress; }, [onButtonPress]);
 
   const pushLog = useCallback((entry: LogEntry) => {
     logsRef.current = [entry, ...logsRef.current].slice(0, 30);
@@ -182,28 +124,20 @@ function useMqtt(url: string) {
           };
           imuRef.current = { ...imuRef.current, [obj.mac]: sample };
           forceTick((n) => n + 1);
-          pushLog({
-            id: Math.random().toString(36).slice(2),
-            direction: 'in',
-            msg: `IMU ${obj.mac.slice(-5)} tilt=${tiltDegrees(sample).toFixed(0)}°`,
-          });
+          pushLog({ id: Math.random().toString(36).slice(2), direction: 'in', msg: `IMU ${obj.mac.slice(-5)} tilt=${tiltDegrees(sample).toFixed(0)}°` });
         } else if ('state' in obj) {
           const b: ButtonSample = { mac: obj.mac, state: obj.state, ts: Date.now() };
           buttonRef.current = { ...buttonRef.current, [obj.mac]: b };
           forceTick((n) => n + 1);
-          pushLog({
-            id: Math.random().toString(36).slice(2),
-            direction: 'in',
-            msg: `BTN ${obj.mac.slice(-5)} ${obj.state}`,
-          });
+          pushLog({ id: Math.random().toString(36).slice(2), direction: 'in', msg: `BTN ${obj.mac.slice(-5)} ${obj.state}` });
+          if (obj.state === 'pressed') {
+            onButtonPressRef.current?.(obj.mac);
+          }
         }
       } catch {}
     });
 
-    return () => {
-      client.end(true);
-      clientRef.current = null;
-    };
+    return () => { client.end(true); clientRef.current = null; };
   }, [url, pushLog]);
 
   const publish = useCallback((cmd: PolyCommand) => {
@@ -211,23 +145,14 @@ function useMqtt(url: string) {
     const json = JSON.stringify(cmd);
     if (!c || !c.connected) return;
     c.publish(TOPIC_CMD, json, { qos: 0 });
-    pushLog({
-      id: Math.random().toString(36).slice(2),
-      direction: 'out',
-      msg: json,
-    });
+    pushLog({ id: Math.random().toString(36).slice(2), direction: 'out', msg: json });
   }, [pushLog]);
 
   return { status, publish, imu: imuRef.current, buttons: buttonRef.current, logs };
 }
 
-const SortableAction = ({
-  action, flow, i, removeActionFromFlow, updateAction,
-  focusedActionId, setFocusedActionId,
-}: any) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: action.id });
-
+const SortableAction = ({ action, flow, i, removeActionFromFlow, updateAction, focusedActionId, setFocusedActionId }: any) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: action.id });
   const style = {
     transform: CSS.Translate.toString(transform),
     transition,
@@ -241,21 +166,12 @@ const SortableAction = ({
   return (
     <div ref={setNodeRef} style={style} className="group/action inline-flex items-center">
       {i > 0 && <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] shrink-0">and then</span>}
-
       <div className="flex items-center gap-3 relative">
-        <div
-          {...attributes}
-          {...listeners}
-          className="absolute -top-4 -left-12 w-6 h-6 text-white/10 hover:text-[#f44f02] cursor-grab active:cursor-grabbing flex items-center justify-center opacity-0 group-hover/action:opacity-100 transition-all z-50"
-        >
+        <div {...attributes} {...listeners} className="absolute -top-4 -left-12 w-6 h-6 text-white/10 hover:text-[#f44f02] cursor-grab active:cursor-grabbing flex items-center justify-center opacity-0 group-hover/action:opacity-100 transition-all z-50">
           <GripVertical className="w-4 h-4" />
         </div>
-
         {flow.actions.length > 1 && (
-          <button
-            onClick={() => removeActionFromFlow(flow.id, action.id)}
-            className="absolute -top-4 -left-4 w-6 h-6 bg-zinc-800 text-zinc-400 border border-white/10 rounded-lg flex items-center justify-center opacity-0 group-hover/action:opacity-100 transition-all z-50 hover:bg-rose-600 hover:text-white hover:border-rose-600 shadow-lg"
-          >
+          <button onClick={() => removeActionFromFlow(flow.id, action.id)} className="absolute -top-4 -left-4 w-6 h-6 bg-zinc-800 text-zinc-400 border border-white/10 rounded-lg flex items-center justify-center opacity-0 group-hover/action:opacity-100 transition-all z-50 hover:bg-rose-600 hover:text-white hover:border-rose-600 shadow-lg">
             <Trash className="w-3 h-3" strokeWidth={2} />
           </button>
         )}
@@ -272,13 +188,8 @@ const SortableAction = ({
             <option key={nodeId} value={nodeId} className="bg-[#111112] text-white italic">{nodeId}</option>
           ))}
         </select>
-
         {NODES[action.nodeId as keyof typeof NODES].outputs.length > 1 ? (
-          <select
-            value={action.item}
-            onChange={(e) => updateAction(flow.id, action.id, { item: e.target.value, value: e.target.value === 'Servo' ? 90 : '#f44f02' })}
-            className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none"
-          >
+          <select value={action.item} onChange={(e) => updateAction(flow.id, action.id, { item: e.target.value, value: e.target.value === 'Servo' ? 90 : '#f44f02' })} className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none">
             {NODES[action.nodeId as keyof typeof NODES].outputs.map((out) => (
               <option key={out} value={out} className="bg-[#111112] text-white">{out}</option>
             ))}
@@ -287,61 +198,32 @@ const SortableAction = ({
           <span className="text-[#f44f02] font-black">{action.item}</span>
         )}
       </div>
-
-      <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] shrink-0">
-        {action.item === 'Servo' ? 'moves to' : 'set to'}
-      </span>
-
+      <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] shrink-0">{action.item === 'Servo' ? 'moves to' : 'set to'}</span>
       {action.item === 'Servo' ? (
         <div className="flex items-center gap-4 bg-white/5 px-4 h-12 rounded-xl border border-white/10 shrink-0">
-          <input type="range" min="0" max="180" value={action.value}
-            onChange={(e) => updateAction(flow.id, action.id, { value: parseInt(e.target.value) })}
-            className="accent-[#f44f02] w-24 h-1" />
+          <input type="range" min="0" max="180" value={action.value} onChange={(e) => updateAction(flow.id, action.id, { value: parseInt(e.target.value) })} className="accent-[#f44f02] w-24 h-1" />
           <span className="text-2xl text-[#f44f02]">{action.value}°</span>
         </div>
       ) : (
         <div className="flex flex-col gap-2 relative shrink-0">
           <div className="flex items-center gap-3 bg-white/5 px-3 h-12 rounded-xl border border-white/10 focus-within:border-[#f44f02] transition-colors">
             <div className="w-6 h-6 rounded-full border border-white/20" style={{ backgroundColor: action.value as string }} />
-            <input
-              type="text"
-              maxLength={7}
-              value={(action.value as string) || ''}
-              onFocus={() => setFocusedActionId(action.id)}
-              onBlur={() => setTimeout(() => setFocusedActionId(null), 200)}
-              onChange={(e) => updateAction(flow.id, action.id, { value: e.target.value })}
-              className="bg-transparent border-none p-0 text-xl font-mono font-bold w-24 focus:ring-0 uppercase h-full"
-              style={{ color: (action.value as string) || '#f44f02' }}
-            />
+            <input type="text" maxLength={7} value={(action.value as string) || ''} onFocus={() => setFocusedActionId(action.id)} onBlur={() => setTimeout(() => setFocusedActionId(null), 200)} onChange={(e) => updateAction(flow.id, action.id, { value: e.target.value })} className="bg-transparent border-none p-0 text-xl font-mono font-bold w-24 focus:ring-0 uppercase h-full" style={{ color: (action.value as string) || '#f44f02' }} />
           </div>
-
           {focusedActionId === action.id && (
             <div className="absolute top-full left-0 mt-1 flex gap-1.5 p-2 bg-zinc-900 border border-white/10 rounded-lg shadow-2xl z-[100] animate-in fade-in slide-in-from-top-1 shrink-0">
               {COLORS.map((c) => (
-                <button
-                  key={c.name}
-                  onClick={() => updateAction(flow.id, action.id, { value: c.hex })}
-                  className={`w-5 h-5 rounded-full border border-white/10 hover:scale-110 transition-transform ${action.value === c.hex ? 'border-white ring-1 ring-[#f44f02]/50' : ''}`}
-                  style={{ backgroundColor: c.hex }}
-                  title={c.name}
-                />
+                <button key={c.name} onClick={() => updateAction(flow.id, action.id, { value: c.hex })} className={`w-5 h-5 rounded-full border border-white/10 hover:scale-110 transition-transform ${action.value === c.hex ? 'border-white ring-1 ring-[#f44f02]/50' : ''}`} style={{ backgroundColor: c.hex }} title={c.name} />
               ))}
-              <button
-                onClick={() => updateAction(flow.id, action.id, { value: '#000000' })}
-                className={`w-5 h-5 rounded-full border border-white/10 bg-black hover:scale-110 transition-transform ${action.value === '#000000' ? 'border-white ring-1 ring-[#f44f02]/50' : ''}`}
-                title="OFF"
-              />
+              <button onClick={() => updateAction(flow.id, action.id, { value: '#000000' })} className={`w-5 h-5 rounded-full border border-white/10 bg-black hover:scale-110 transition-transform ${action.value === '#000000' ? 'border-white ring-1 ring-[#f44f02]/50' : ''}`} title="OFF" />
             </div>
           )}
         </div>
       )}
-
       <div className="flex items-center gap-3 shrink-0">
         <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] self-center">after</span>
         <div className="flex items-center gap-2 bg-black/40 px-3 h-10 rounded border border-white/5">
-          <input type="number" step="1" min="0" value={action.delay || 0}
-            onChange={(e) => updateAction(flow.id, action.id, { delay: parseFloat(e.target.value) })}
-            className="bg-transparent border-none text-[#f44f02] font-black w-10 text-xl focus:ring-0 text-center h-full" />
+          <input type="number" step="1" min="0" value={action.delay || 0} onChange={(e) => updateAction(flow.id, action.id, { delay: parseFloat(e.target.value) })} className="bg-transparent border-none text-[#f44f02] font-black w-10 text-xl focus:ring-0 text-center h-full" />
           <span className="text-[10px] text-white/20 font-bold uppercase">s</span>
         </div>
       </div>
@@ -355,47 +237,61 @@ const ConnectAndCode = () => {
   const [activeFlowId, setActiveFlowId] = useState<string | null>(null);
   const [focusedActionId, setFocusedActionId] = useState<string | null>(null);
 
-  const { status, publish, imu, buttons, logs } = useMqtt(MQTT_WS_URL);
-
   const lastFiredRef = useRef<Record<string, number>>({});
   const activeWhileRef = useRef<Record<string, boolean>>({});
+  const isRunningRef = useRef(isRunning);
+  const flowsRef = useRef(flows);
+  useEffect(() => { isRunningRef.current = isRunning; }, [isRunning]);
+  useEffect(() => { flowsRef.current = flows; }, [flows]);
 
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const runActions = useCallback((flow: Flow) => {
+  const runActions = useCallback((flow: Flow, publishFn: (cmd: PolyCommand) => void) => {
     setActiveFlowId(flow.id);
     let accumulated = 0;
     flow.actions.forEach((action) => {
       accumulated += (action.delay || 0) * 1000;
       const target = NODE_MACS[action.nodeId] ?? action.nodeId;
       setTimeout(() => {
-        if (action.item === 'Servo') {
-          publish({ cmd: 'pwm', target, val: Number(action.value) });
-        } else {
-          publish({ cmd: 'led', target, val: hexToInt(String(action.value)) });
-        }
+        if (action.item === 'Servo') publishFn({ cmd: 'pwm', target, val: Number(action.value) });
+        else publishFn({ cmd: 'led', target, val: hexToInt(String(action.value)) });
       }, accumulated);
     });
     setTimeout(() => setActiveFlowId(null), accumulated + 800);
-  }, [publish]);
+  }, []);
+
+  const publishRef = useRef<(cmd: PolyCommand) => void>(() => {});
+
+  const handleButtonPress = useCallback((mac: string) => {
+    if (!isRunningRef.current) return;
+    const matchingFlows = flowsRef.current.filter(
+      (f) => f.trigger.item === 'Button' && NODE_MACS[f.trigger.nodeId] === mac
+    );
+    matchingFlows.forEach((f) => {
+      const now = Date.now();
+      const last = lastFiredRef.current[f.id] ?? 0;
+      if (now - last > TRIGGER_RETRIGGER_MS) {
+        lastFiredRef.current[f.id] = now;
+        runActions(f, publishRef.current);
+      }
+    });
+  }, [runActions]);
+
+  const { status, publish, imu, buttons, logs } = useMqtt(MQTT_WS_URL, handleButtonPress);
+  useEffect(() => { publishRef.current = publish; }, [publish]);
 
   const evaluateTrigger = useCallback((flow: Flow): boolean => {
     if (flow.trigger.logicType === 'START') return true;
     const mac = NODE_MACS[flow.trigger.nodeId];
     if (!mac) return false;
-
     if (flow.trigger.item === 'Gyro') {
       const sample = imu[mac];
       if (!sample) return false;
-      if (flow.trigger.mode === 'Tilted') {
-        return tiltDegrees(sample) >= (flow.trigger.threshold ?? 30);
-      }
-      if (flow.trigger.mode === 'Shaken') {
-        return shakeMagnitude(sample) >= 250;
-      }
+      if (flow.trigger.mode === 'Tilted') return tiltDegrees(sample) >= (flow.trigger.threshold ?? 30);
+      if (flow.trigger.mode === 'Shaken') return shakeMagnitude(sample) >= 250;
     }
     if (flow.trigger.item === 'Button') {
       const b = buttons[mac];
@@ -410,7 +306,6 @@ const ConnectAndCode = () => {
       activeWhileRef.current = {};
       return;
     }
-
     const interval = setInterval(() => {
       const polledMacs = new Set<string>();
       flows.forEach((f) => {
@@ -422,24 +317,22 @@ const ConnectAndCode = () => {
           }
         }
       });
-
       flows.forEach((f) => {
         const now = Date.now();
         const firing = evaluateTrigger(f);
-
         if (f.trigger.logicType === 'IF') {
           if (firing) {
             const last = lastFiredRef.current[f.id] ?? 0;
             if (now - last > TRIGGER_RETRIGGER_MS) {
               lastFiredRef.current[f.id] = now;
-              runActions(f);
+              runActions(f, publish);
             }
           }
         } else if (f.trigger.logicType === 'WHILE') {
           const wasActive = activeWhileRef.current[f.id] ?? false;
           if (firing && !wasActive) {
             activeWhileRef.current[f.id] = true;
-            runActions(f);
+            runActions(f, publish);
           } else if (!firing && wasActive) {
             activeWhileRef.current[f.id] = false;
             f.actions.forEach((a) => {
@@ -449,15 +342,14 @@ const ConnectAndCode = () => {
             });
           }
         } else if (f.trigger.logicType === 'START') {
-            const hasFired = lastFiredRef.current[f.id] ?? false;
-            if (!hasFired) {
-              lastFiredRef.current[f.id] = now;
-              runActions(f);
-            }
+          const hasFired = lastFiredRef.current[f.id] ?? false;
+          if (!hasFired) {
+            lastFiredRef.current[f.id] = now;
+            runActions(f, publish);
+          }
         }
       });
     }, GYRO_POLL_MS);
-
     return () => clearInterval(interval);
   }, [isRunning, flows, publish, evaluateTrigger, runActions]);
 
@@ -486,9 +378,7 @@ const ConnectAndCode = () => {
         mode: triggerItem === 'Gyro' ? 'Tilted' : triggerItem === 'Start' ? 'Auto' : 'Pressed',
         threshold: triggerItem === 'Gyro' ? 45 : null,
       },
-      actions: [
-        { id: Math.random().toString(36).slice(2, 11), nodeId: 'POLY One', item: 'Servo', value: 90, delay: 0 },
-      ],
+      actions: [{ id: Math.random().toString(36).slice(2, 11), nodeId: 'POLY One', item: 'Servo', value: 90, delay: 0 }],
     };
     setFlows([...flows, newFlow]);
   };
@@ -500,9 +390,7 @@ const ConnectAndCode = () => {
   };
 
   const removeActionFromFlow = (flowId: string, actionId: string) => {
-    setFlows(flows.map((f) => f.id === flowId
-      ? { ...f, actions: f.actions.filter((a) => a.id !== actionId) }
-      : f));
+    setFlows(flows.map((f) => f.id === flowId ? { ...f, actions: f.actions.filter((a) => a.id !== actionId) } : f));
   };
 
   const updateTrigger = (id: string, updates: Partial<Trigger>) => {
@@ -516,15 +404,10 @@ const ConnectAndCode = () => {
   };
 
   const connText = useMemo(() => ({
-    connecting:   'Connecting…',
-    connected:    'Mesh Link OK',
-    reconnecting: 'Reconnecting…',
-    error:        'Offline',
+    connecting: 'Connecting…', connected: 'Mesh Link OK', reconnecting: 'Reconnecting…', error: 'Offline',
   }[status]), [status]);
 
-  const connColor = status === 'connected' ? 'text-green-500'
-                  : status === 'error'     ? 'text-rose-500'
-                  :                        'text-amber-500';
+  const connColor = status === 'connected' ? 'text-green-500' : status === 'error' ? 'text-rose-500' : 'text-amber-500';
 
   return (
     <div className="min-h-screen bg-[#080809] text-zinc-400 selection:bg-[#f44f02]/30 flex flex-col tracking-tight text-[11px] font-sans overflow-x-hidden">
@@ -542,36 +425,22 @@ const ConnectAndCode = () => {
           </div>
           <div>
             <div className="flex items-baseline gap-6">
-              <h1 className="text-3xl font-black tracking-tighter italic leading-none">
-                POLY <span className="text-[#f44f02]">INSTRUCT</span>
-              </h1>
-              <span className="text-xl font-bold tracking-[0.2em] text-[#f44f02] lowercase opacity-80 border-l border-white/10 pl-6">
-                engineering for everyone
-              </span>
+              <h1 className="text-3xl font-black tracking-tighter italic leading-none">POLY <span className="text-[#f44f02]">INSTRUCT</span></h1>
+              <span className="text-xl font-bold tracking-[0.2em] text-[#f44f02] lowercase opacity-80 border-l border-white/10 pl-6">engineering for everyone</span>
             </div>
           </div>
         </div>
-
         <div className="flex items-center gap-8">
           <div className="flex flex-col items-end gap-1 text-right">
-            <span className={`text-[10px] font-black tracking-widest uppercase ${connColor}`}>
-              {connText}
-            </span>
-            <span className="text-[10px] font-mono text-zinc-600">
-              tilt {liveTilt}°
-            </span>
+            <span className={`text-[10px] font-black tracking-widest uppercase ${connColor}`}>{connText}</span>
+            <span className="text-[10px] font-mono text-zinc-600">tilt {liveTilt}°</span>
           </div>
-
           <motion.button
             layout
             transition={{ layout: { type: 'spring', stiffness: 300, damping: 30 }, default: { duration: 0.5 } }}
             onClick={() => setIsRunning(!isRunning)}
             disabled={status !== 'connected'}
-            className={`px-12 py-4 rounded font-black text-sm tracking-[0.1em] transition-all duration-500 border-4 disabled:opacity-40 disabled:cursor-not-allowed ${
-              isRunning
-                ? 'bg-[#f44f02] text-black border-[#f44f02] shadow-[0_0_40px_rgba(244,79,2,0.2)]'
-                : 'bg-transparent text-white border-white/20'
-            }`}
+            className={`px-12 py-4 rounded font-black text-sm tracking-[0.1em] transition-all duration-500 border-4 disabled:opacity-40 disabled:cursor-not-allowed ${isRunning ? 'bg-[#f44f02] text-black border-[#f44f02] shadow-[0_0_40px_rgba(244,79,2,0.2)]' : 'bg-transparent text-white border-white/20'}`}
           >
             {isRunning ? 'System Active' : 'Activate System'}
           </motion.button>
@@ -585,20 +454,16 @@ const ConnectAndCode = () => {
               <div className="py-32 flex flex-col items-center justify-center text-center">
                 <p className="text-3xl font-black tracking-tighter text-white uppercase mb-16 italic opacity-20">Start Your Automation</p>
                 <div className="grid grid-cols-2 gap-8 w-full max-w-2xl">
-                    <button onClick={() => addFlow('System', 'Start')} className="bg-[#111112] border-2 border-white/5 hover:border-emerald-600 p-8 rounded-3xl flex items-center justify-between group transition-all text-left">
-                        <div className="flex items-center gap-6">{ITEM_ICONS['Start']}<div><p className="text-xl font-black text-white italic tracking-tighter">On Start</p><p className="text-[10px] font-bold text-white/20 uppercase tracking-widest">Global Trigger</p></div></div>
-                        <Plus className="w-6 h-6 text-white/5 group-hover:text-emerald-600 transition-colors" />
-                    </button>
+                  <button onClick={() => addFlow('System', 'Start')} className="bg-[#111112] border-2 border-white/5 hover:border-emerald-600 p-8 rounded-3xl flex items-center justify-between group transition-all text-left">
+                    <div className="flex items-center gap-6">{ITEM_ICONS['Start']}<div><p className="text-xl font-black text-white italic tracking-tighter">On Start</p><p className="text-[10px] font-bold text-white/20 uppercase tracking-widest">Global Trigger</p></div></div>
+                    <Plus className="w-6 h-6 text-white/5 group-hover:text-emerald-600 transition-colors" />
+                  </button>
                   {Object.entries(NODES).map(([id, node]) => (
                     <div key={id} className="flex flex-col gap-4">
                       <p className="text-xl font-black text-[#f44f02] tracking-tighter italic uppercase text-left">{id}</p>
                       <div className="grid gap-3">
                         {node.inputs.map((input) => (
-                          <button
-                            key={input}
-                            onClick={() => addFlow(id, input)}
-                            className="bg-[#111112] border-2 border-white/5 hover:border-[#f44f02] p-8 rounded-3xl flex items-center justify-between group transition-all text-left"
-                          >
+                          <button key={input} onClick={() => addFlow(id, input)} className="bg-[#111112] border-2 border-white/5 hover:border-[#f44f02] p-8 rounded-3xl flex items-center justify-between group transition-all text-left">
                             <div className="flex items-center gap-6">
                               {ITEM_ICONS[input]}
                               <div>
@@ -617,59 +482,31 @@ const ConnectAndCode = () => {
             ) : (
               <>
                 {flows.map((flow) => (
-                  <div
-                    key={flow.id}
-                    className={`bg-[#111112] border-2 rounded-3xl overflow-hidden shadow-2xl relative shadow-black group ${
-                      activeFlowId === flow.id ? 'border-[#f44f02]' : 'border-white/5 hover:border-white/10'
-                    }`}
-                  >
+                  <div key={flow.id} className={`bg-[#111112] border-2 rounded-3xl overflow-hidden shadow-2xl relative shadow-black group ${activeFlowId === flow.id ? 'border-[#f44f02]' : 'border-white/5 hover:border-white/10'}`}>
                     {activeFlowId === flow.id && isRunning && (
                       <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#f44f02] origin-left shadow-[0_0_15px_#f44f02]" />
                     )}
-
-                    <button
-                      onClick={() => setFlows(flows.filter((f) => f.id !== flow.id))}
-                      className="absolute top-6 right-6 p-3 text-white/5 hover:text-rose-600 hover:bg-rose-600/5 rounded-full transition-all opacity-0 group-hover:opacity-100 z-50"
-                    >
+                    <button onClick={() => setFlows(flows.filter((f) => f.id !== flow.id))} className="absolute top-6 right-6 p-3 text-white/5 hover:text-rose-600 hover:bg-rose-600/5 rounded-full transition-all opacity-0 group-hover:opacity-100 z-50">
                       <Trash className="w-5 h-5" strokeWidth={1.5} />
                     </button>
-
                     <div className="p-12 flex flex-col gap-10 text-3xl font-black tracking-tighter text-white text-left">
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-10">
                         {flow.trigger.logicType !== 'START' && (
-                            <select
-                            value={flow.trigger.logicType}
-                            onChange={(e) => updateTrigger(flow.id, { logicType: e.target.value as 'IF' | 'WHILE' })}
-                            className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none"
-                            >
+                          <select value={flow.trigger.logicType} onChange={(e) => updateTrigger(flow.id, { logicType: e.target.value as 'IF' | 'WHILE' })} className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none">
                             <option value="IF" className="bg-[#111112] text-white">If</option>
                             <option value="WHILE" className="bg-[#111112] text-white">While</option>
-                            </select>
+                          </select>
                         )}
                         {flow.trigger.logicType === 'START' && <span className="text-emerald-500 font-black h-12 flex items-center">On Start</span>}
-
                         {flow.trigger.logicType !== 'START' && (
-                        <select
-                          value={flow.trigger.nodeId}
-                          onChange={(e) => {
-                            const nodeKey = e.target.value as keyof typeof NODES;
-                            const item = NODES[nodeKey].inputs[0];
-                            updateTrigger(flow.id, { nodeId: e.target.value, item: item as any, mode: item === 'Gyro' ? 'Tilted' : 'Pressed' });
-                          }}
-                          className="bg-zinc-800/50 border border-white/10 rounded pl-6 pr-7 h-12 text-white font-black italic cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none min-w-[220px]"
-                        >
-                          {Object.keys(NODES).map((nodeId) => (
-                            <option key={nodeId} value={nodeId} className="bg-[#111112] text-white italic">{nodeId}</option>
-                          ))}
-                        </select>
+                          <select value={flow.trigger.nodeId} onChange={(e) => { const nodeKey = e.target.value as keyof typeof NODES; const item = NODES[nodeKey].inputs[0]; updateTrigger(flow.id, { nodeId: e.target.value, item: item as any, mode: item === 'Gyro' ? 'Tilted' : 'Pressed' }); }} className="bg-zinc-800/50 border border-white/10 rounded pl-6 pr-7 h-12 text-white font-black italic cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none min-w-[220px]">
+                            {Object.keys(NODES).map((nodeId) => (
+                              <option key={nodeId} value={nodeId} className="bg-[#111112] text-white italic">{nodeId}</option>
+                            ))}
+                          </select>
                         )}
-
                         {flow.trigger.logicType !== 'START' && NODES[flow.trigger.nodeId as keyof typeof NODES].inputs.length > 1 ? (
-                          <select
-                            value={flow.trigger.item}
-                            onChange={(e) => updateTrigger(flow.id, { item: e.target.value as any, mode: e.target.value === 'Gyro' ? 'Tilted' : 'Pressed' })}
-                            className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none"
-                          >
+                          <select value={flow.trigger.item} onChange={(e) => updateTrigger(flow.id, { item: e.target.value as any, mode: e.target.value === 'Gyro' ? 'Tilted' : 'Pressed' })} className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none">
                             {NODES[flow.trigger.nodeId as keyof typeof NODES].inputs.map((input) => (
                               <option key={input} value={input} className="bg-[#111112] text-white">{input}</option>
                             ))}
@@ -677,64 +514,39 @@ const ConnectAndCode = () => {
                         ) : flow.trigger.logicType !== 'START' && (
                           <span className="text-[#f44f02] h-12 flex items-center">{flow.trigger.item}</span>
                         )}
-
                         {flow.trigger.logicType !== 'START' && <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] self-center">is</span>}
-
                         {flow.trigger.logicType !== 'START' && flow.trigger.item === 'Gyro' ? (
-                          <select
-                            value={flow.trigger.mode}
-                            onChange={(e) => updateTrigger(flow.id, { mode: e.target.value as any })}
-                            className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none"
-                          >
+                          <select value={flow.trigger.mode} onChange={(e) => updateTrigger(flow.id, { mode: e.target.value as any })} className="bg-zinc-800/50 border border-white/10 rounded px-4 h-12 text-[#f44f02] font-black cursor-pointer hover:bg-[#f44f02] hover:text-black transition-all appearance-none outline-none">
                             {GYRO_MODES.map((m) => <option key={m} value={m} className="bg-[#111112] text-white">{m}</option>)}
                           </select>
                         ) : flow.trigger.logicType !== 'START' && (
                           <span className="text-[#f44f02] h-12 flex items-center">{flow.trigger.mode}</span>
                         )}
-
                         {flow.trigger.mode === 'Tilted' && (
                           <div className="flex items-center gap-4 h-12">
                             <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] self-center">past</span>
                             <div className="flex items-center gap-4 bg-white/5 px-4 h-full rounded-xl border border-white/10">
-                              <input type="range" min="5" max="90" value={flow.trigger.threshold || 0}
-                                onChange={(e) => updateTrigger(flow.id, { threshold: parseInt(e.target.value) })}
-                                className="accent-[#f44f02] w-24 h-1" />
+                              <input type="range" min="5" max="90" value={flow.trigger.threshold || 0} onChange={(e) => updateTrigger(flow.id, { threshold: parseInt(e.target.value) })} className="accent-[#f44f02] w-24 h-1" />
                               <span className="text-2xl text-[#f44f02]">{flow.trigger.threshold || 0}°</span>
                             </div>
                           </div>
                         )}
                       </div>
-
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-10">
                         <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] self-center h-12 flex items-center">then</span>
-
                         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => handleDragEnd(e, flow.id)}>
                           <SortableContext items={flow.actions.map((a) => a.id)} strategy={horizontalListSortingStrategy}>
                             {flow.actions.map((action, i) => (
-                              <SortableAction
-                                key={action.id}
-                                action={action}
-                                flow={flow}
-                                i={i}
-                                removeActionFromFlow={removeActionFromFlow}
-                                updateAction={updateAction}
-                                focusedActionId={focusedActionId}
-                                setFocusedActionId={setFocusedActionId}
-                              />
+                              <SortableAction key={action.id} action={action} flow={flow} i={i} removeActionFromFlow={removeActionFromFlow} updateAction={updateAction} focusedActionId={focusedActionId} setFocusedActionId={setFocusedActionId} />
                             ))}
                           </SortableContext>
                         </DndContext>
-
-                        <button
-                          onClick={() => addActionToFlow(flow.id)}
-                          className="flex items-center gap-2 text-[#f44f02] hover:text-white transition-colors group/add h-12"
-                        >
+                        <button onClick={() => addActionToFlow(flow.id)} className="flex items-center gap-2 text-[#f44f02] hover:text-white transition-colors group/add h-12">
                           <span className="text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] self-center group-hover/add:text-[#f44f02]">and then...</span>
                           <PlusCircle className="w-6 h-6 opacity-20 group-hover/add:opacity-100 transition-opacity" />
                         </button>
                       </div>
                     </div>
-
                     {flow.trigger.logicType === 'WHILE' && (
                       <div className="mt-8 flex items-center gap-4 text-white/20 not-italic font-bold text-sm uppercase tracking-[0.2em] px-12 pb-8">
                         <div className="h-[2px] flex-1 bg-white/5" />
@@ -742,28 +554,22 @@ const ConnectAndCode = () => {
                         <div className="h-[2px] flex-1 bg-white/5" />
                       </div>
                     )}
-
                     <div className="absolute -bottom-[2px] left-12 right-12 h-[2px] bg-gradient-to-r from-transparent via-white/5 to-transparent" />
                   </div>
                 ))}
-
                 <div className="py-24 border-4 border-dashed border-white/5 rounded-3xl flex flex-col items-center justify-center text-center px-12">
                   <p className="text-2xl font-black tracking-tighter text-white uppercase mb-12 italic opacity-20">Add Another Sequence</p>
                   <div className="grid grid-cols-2 gap-8 w-full max-w-2xl">
                     <button onClick={() => addFlow('System', 'Start')} className="bg-[#111112] border-2 border-white/5 hover:border-emerald-600 p-8 rounded-3xl flex items-center justify-between group transition-all text-left">
-                        <div className="flex items-center gap-6">{ITEM_ICONS['Start']}<div><p className="text-xl font-black text-white italic tracking-tighter">On Start</p><p className="text-[10px] font-bold text-white/20 uppercase tracking-widest">Global Trigger</p></div></div>
-                        <Plus className="w-6 h-6 text-white/5 group-hover:text-emerald-600 transition-colors" />
+                      <div className="flex items-center gap-6">{ITEM_ICONS['Start']}<div><p className="text-xl font-black text-white italic tracking-tighter">On Start</p><p className="text-[10px] font-bold text-white/20 uppercase tracking-widest">Global Trigger</p></div></div>
+                      <Plus className="w-6 h-6 text-white/5 group-hover:text-emerald-600 transition-colors" />
                     </button>
                     {Object.entries(NODES).map(([id, node]) => (
                       <div key={id} className="flex flex-col gap-4">
                         <p className="text-xl font-black text-[#f44f02] tracking-tighter italic uppercase text-left">{id}</p>
                         <div className="grid gap-3">
                           {node.inputs.map((input) => (
-                            <button
-                              key={input}
-                              onClick={() => addFlow(id, input)}
-                              className="bg-[#111112] border-2 border-white/5 hover:border-[#f44f02] p-8 rounded-3xl flex items-center justify-between group transition-all text-left"
-                            >
+                            <button key={input} onClick={() => addFlow(id, input)} className="bg-[#111112] border-2 border-white/5 hover:border-[#f44f02] p-8 rounded-3xl flex items-center justify-between group transition-all text-left">
                               <div className="flex items-center gap-6">
                                 {ITEM_ICONS[input]}
                                 <div>
@@ -793,30 +599,13 @@ const ConnectAndCode = () => {
         <div className="flex-1 flex overflow-hidden items-center justify-start h-full">
           <AnimatePresence initial={false}>
             {logs.map((log, i) => (
-              <motion.div
-                key={log.id}
-                layout
-                initial={{ opacity: 0, x: -100, width: 0 }}
-                animate={{
-                  opacity: Math.max(0, 1 - i * 0.15),
-                  x: 0,
-                  width: 'auto',
-                  marginRight: '1.5rem',
-                }}
-                exit={{ opacity: 0, x: 100, width: 0 }}
-                transition={{ type: 'spring', stiffness: 100, damping: 20 }}
-                className={`font-mono text-[10px] whitespace-nowrap border-r border-white/5 pr-6 italic tracking-tighter shrink-0 ${
-                  log.direction === 'in' ? 'text-cyan-400' : 'text-[#f44f02]'
-                }`}
-              >
+              <motion.div key={log.id} layout initial={{ opacity: 0, x: -100, width: 0 }} animate={{ opacity: Math.max(0, 1 - i * 0.15), x: 0, width: 'auto', marginRight: '1.5rem' }} exit={{ opacity: 0, x: 100, width: 0 }} transition={{ type: 'spring', stiffness: 100, damping: 20 }} className={`font-mono text-[10px] whitespace-nowrap border-r border-white/5 pr-6 italic tracking-tighter shrink-0 ${log.direction === 'in' ? 'text-cyan-400' : 'text-[#f44f02]'}`}>
                 <span className="opacity-50 mr-2">{log.direction === 'in' ? '←' : '→'}</span>
                 {log.msg}
               </motion.div>
             ))}
           </AnimatePresence>
-          {logs.length === 0 && (
-            <span className="text-zinc-800 text-[10px] italic tracking-widest animate-pulse">Monitoring mesh loop...</span>
-          )}
+          {logs.length === 0 && <span className="text-zinc-800 text-[10px] italic tracking-widest animate-pulse">Monitoring mesh loop...</span>}
         </div>
         <div className="shrink-0 flex items-center gap-2">
           <span className="text-[9px] font-black text-white tracking-[0.2em]">engineered by</span>
