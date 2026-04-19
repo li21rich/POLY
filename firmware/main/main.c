@@ -22,7 +22,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-#define BUILD_AS_HOST
+//#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -54,11 +54,24 @@ static void host_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint
         printf("ESP-NOW recv len=%d (unknown packet)\n", len);
     }
 }
-
 void host_espnow_init(void) {
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_send_cb(host_espnow_send_cb));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(host_espnow_recv_cb));
+
+    // Peer 1: POLY Motor
+    uint8_t motor_mac[] = {0xac, 0xeb, 0xe6, 0x56, 0x4a, 0xd0};
+    esp_now_peer_info_t motor_peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+    memcpy(motor_peer.peer_addr, motor_mac, 6);
+    esp_now_add_peer(&motor_peer);
+    printf("Registered Motor Peer\n");
+
+    // Peer 2: POLY Sense
+    uint8_t sense_mac[] = {0x88, 0x56, 0xa6, 0x2c, 0x5d, 0x24};
+    esp_now_peer_info_t sense_peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+    memcpy(sense_peer.peer_addr, sense_mac, 6);
+    esp_now_add_peer(&sense_peer);
+    printf("Registered Sense Peer\n");
 }
 
 void handle_mqtt_message(char *payload) {

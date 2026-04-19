@@ -4,6 +4,8 @@
 static led_strip_handle_t led_strip;
 
 #define PIN_LED 8
+#define BUTTON_LED 5 // has internal pull up
+
 
 void driver_init(void) {
     led_strip_config_t strip_config = {
