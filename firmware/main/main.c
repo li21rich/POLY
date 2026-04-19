@@ -21,7 +21,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-//#define BUILD_AS_HOST
+#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -132,23 +132,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 // ── C3 Peripheral ──────────────────────────────────────────────────────────
 
 static uint8_t host_mac[6];
-static bool gyro_streaming = false;
-
-void imu_stream_task(void *arg) {
-    imu_packet_t pkt;
-    imu_data_t data;
-    while (gyro_streaming) {
-        if (driver_get_gyro(&data)) {
-            pkt.ax = data.ax; pkt.ay = data.ay; pkt.az = data.az;
-            pkt.gx = data.gx; pkt.gy = data.gy; pkt.gz = data.gz;
-            esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
-            printf("IMU A: x=%.3f y=%.3f z=%.3f | G: x=%.3f y=%.3f z=%.3f\n",
-                   data.ax, data.ay, data.az, data.gx, data.gy, data.gz);
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));  // 10 Hz
-    }
-    vTaskDelete(NULL);
-}
 
 void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
@@ -167,10 +150,16 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
         case 1: driver_set_led(packet->val); break;
         case 0: driver_set_pwm(packet->val); break;
         case 2:
-            gyro_streaming = packet->val > 0;
-            driver_set_gyro_mode(gyro_streaming);
-            if (gyro_streaming)
-                xTaskCreate(imu_stream_task, "imu_stream", 4096, NULL, 5, NULL);
+            imu_data_t imu;
+            if (driver_get_imu(&imu)) {
+                imu_packet_t pkt = {
+                    .ax = imu.ax, .ay = imu.ay, .az = imu.az,
+                    .gx = imu.gx, .gy = imu.gy, .gz = imu.gz,
+                };
+                esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
+            } else {
+                printf("IMU not ready\n");
+            }
             break;
         default: printf("Unknown command: %d\n", packet->cmd_type);
     }
@@ -197,7 +186,7 @@ void app_main(void) {
     
     host_espnow_init();
     
-    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://54.36.178.49:1883" };
+    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://172.20.10.14:1883" };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);

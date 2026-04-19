@@ -70,11 +70,7 @@ void driver_set_pwm(int angle) {
     printf("Servo -> %d°\n", angle);
 }
 
-void driver_set_gyro_mode(bool active) {
-    printf("Warning: Motor node has no gyro capability.\n");
-}
-
-bool driver_get_gyro(imu_data_t *out) {
+bool driver_get_imu(imu_data_t *out) {
     printf("Warning: Motor node has no gyro capability.\n");
     return false;
 }

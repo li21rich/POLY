@@ -30,9 +30,10 @@ void driver_set_led(int32_t hex_color) {
 }
 
 void driver_set_pwm(int duty_percent) {
-    printf("Warning: Host node has no PWM capability.\n");
+    printf("Warning: Motor node has no gyro capability.\n");
 }
 
-void driver_set_gyro_mode(bool active) {
+bool driver_get_imu(imu_data_t *out) {
     printf("Warning: Host node has no gyro capability.\n");
+    return false;
 }

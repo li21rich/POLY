@@ -12,9 +12,13 @@ int wifi_get_ip(void) {
 
 static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *d = (wifi_event_sta_disconnected_t *)event_data;
+        printf("Disconnect reason: %d\n", d->reason);  // <-- add this
         got_ip = 0;
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *e = (ip_event_got_ip_t *)event_data;
+        printf("Got IP: " IPSTR "\n", IP2STR(&e->ip_info.ip)); 
         got_ip = 1;
     }
 }
