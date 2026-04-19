@@ -26,7 +26,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-#define BUILD_AS_HOST
+//#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -51,6 +51,20 @@ static void host_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const uint
                recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5],
                imu->ax, imu->ay, imu->az,
                imu->gx, imu->gy, imu->gz);
+
+        // Publish to MQTT so the UI can see it
+        if (client != NULL) {
+            char payload[256];
+            snprintf(payload, sizeof(payload),
+                "{\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
+                "\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
+                "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f}",
+                recv_info->src_addr[0], recv_info->src_addr[1], recv_info->src_addr[2],
+                recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5],
+                imu->ax, imu->ay, imu->az,
+                imu->gx, imu->gy, imu->gz);
+            esp_mqtt_client_publish(client, "poly/telemetry", payload, 0, 0, 0);
+        }
     } else {
         printf("ESP-NOW recv len=%d (unknown packet)\n", len);
     }

@@ -66,10 +66,9 @@ function hexToInt(hex: string): number {
   const n = parseInt(s.length === 3 ? s.split('').map((c) => c + c).join('') : s, 16);
   return Number.isFinite(n) ? n : 0;
 }
-
 function tiltDegrees(s: ImuSample): number {
-  const horiz = Math.sqrt(s.ax * s.ax + s.ay * s.ay);
-  return (Math.atan2(horiz, Math.abs(s.az)) * 180) / Math.PI;
+  const horiz = Math.sqrt(s.ax * s.ax + s.az * s.az);
+  return (Math.atan2(horiz, Math.abs(s.ay)) * 180) / Math.PI;
 }
 
 function shakeMagnitude(s: ImuSample): number {
