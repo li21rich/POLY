@@ -21,7 +21,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-//#define BUILD_AS_HOST
+#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -105,7 +105,11 @@ void handle_mqtt_message(char *payload) {
                                    (strcmp(cmd->valuestring, "gyro") == 0) ? 2 : 255;
 
                 espnow_packet_t packet = { .cmd_type = cmd_type, .val = val_int };
-                esp_now_send(mac, (uint8_t *)&packet, sizeof(packet));
+                printf("Sending to: %02x:%02x:%02x:%02x:%02x:%02x cmd:%d val:%ld\n",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                    cmd_type, (long)val_int);
+                esp_err_t err = esp_now_send(mac, (uint8_t *)&packet, sizeof(packet));
+                printf("esp_now_send result: %s\n", esp_err_to_name(err));
             }
         }
     }
@@ -127,15 +131,13 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         }
     }   
 }
-
 #else
-// ── C3 Peripheral ──────────────────────────────────────────────────────────
-
 static uint8_t host_mac[6];
+static volatile bool imu_reply_pending = false;
 
 void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
-    memcpy(host_mac, recv_info->src_addr, 6);  // remember host to reply to
+    memcpy(host_mac, recv_info->src_addr, 6);
     if (!esp_now_is_peer_exist(host_mac)) {
         esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
         memcpy(peer.peer_addr, host_mac, 6);
@@ -149,19 +151,7 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
     switch(packet->cmd_type) {
         case 1: driver_set_led(packet->val); break;
         case 0: driver_set_pwm(packet->val); break;
-        case 2: {
-            imu_data_t imu;
-            if (driver_get_imu(&imu)) {
-                imu_packet_t pkt = {
-                    .ax = imu.ax, .ay = imu.ay, .az = imu.az,
-                    .gx = imu.gx, .gy = imu.gy, .gz = imu.gz,
-                };
-                esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
-            } else {
-                printf("IMU not ready\n");
-            }
-            break;
-        }
+        case 2: imu_reply_pending = true; break;   // defer, don't send from here
     }
 }
 #endif
@@ -198,8 +188,24 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
     printf("C3 Node ready.\n");
 #endif
-
     while (1) {
+#ifndef BUILD_AS_HOST
+        if (imu_reply_pending) {
+            imu_reply_pending = false;
+            imu_data_t imu;
+            if (driver_get_imu(&imu)) {
+                imu_packet_t pkt = {
+                    .ax = imu.ax, .ay = imu.ay, .az = imu.az,
+                    .gx = imu.gx, .gy = imu.gy, .gz = imu.gz,
+                };
+                esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
+            } else {
+                printf("IMU not ready\n");
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+#else
         vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
     }
 }

@@ -42,6 +42,7 @@ static imu_data_t latest = {0};
 static imu_data_t ema_state = {0};
 static float alpha = 0.3f;
 static bool ema_init = false;
+static portMUX_TYPE imu_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 static uint8_t imu_addr = 0;
 static led_strip_handle_t led_strip;
@@ -123,7 +124,9 @@ static void imu_task(void *arg) {
     while (1) {
         if (read_raw(&raw)) {
             filter_ema(&raw, &ema_state);
+            portENTER_CRITICAL(&imu_spinlock);
             latest = ema_state;
+            portEXIT_CRITICAL(&imu_spinlock);
         }
 
         vTaskDelayUntil(&last, pdMS_TO_TICKS(100)); // 10 Hz
@@ -200,6 +203,8 @@ void driver_set_pwm(int duty_percent) {
 
 bool driver_get_imu(imu_data_t *out) {
     if (!out) return false;
+    portENTER_CRITICAL(&imu_spinlock);
     *out = latest;
+    portEXIT_CRITICAL(&imu_spinlock);
     return true;
 }
