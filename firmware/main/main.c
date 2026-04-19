@@ -9,6 +9,7 @@
 #include "esp_mac.h"
 #include "driver.h" 
 #include "wifi.h" 
+#include "esp_log.h"
 // FLASH CHECK LIST: comment/uncomment BUILD_AS_HOST, swap CMakeList, switch port & esp.
 
 typedef struct {
@@ -26,10 +27,8 @@ typedef struct {
 void print_mac_address(void) {
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    printf("\n***********************************\n");
     printf("DEVICE MAC ADDRESS: %02x:%02x:%02x:%02x:%02x:%02x\n", 
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    printf("***********************************\n\n");
 }
 
 #ifdef BUILD_AS_HOST
@@ -88,7 +87,7 @@ void handle_mqtt_message(char *payload) {
             if (sscanf(target->valuestring, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                 &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
 
-                esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+                esp_now_peer_info_t peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
                 memcpy(peer.peer_addr, mac, 6);
 
                 if (!esp_now_is_peer_exist(mac)) {
@@ -135,11 +134,15 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 static uint8_t host_mac[6];
 static volatile bool imu_reply_pending = false;
 
+static void c3_send_cb(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+    printf("C3 reply ack: %s\n", status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+}
+
 void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
     memcpy(host_mac, recv_info->src_addr, 6);
     if (!esp_now_is_peer_exist(host_mac)) {
-        esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+        esp_now_peer_info_t peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
         memcpy(peer.peer_addr, host_mac, 6);
         esp_now_add_peer(&peer);
         printf("Registered host peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -157,6 +160,8 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
 #endif
 
 void app_main(void) {
+    esp_log_level_set("wifi", ESP_LOG_VERBOSE);
+    esp_log_level_set("espnow", ESP_LOG_VERBOSE);
     driver_init();
     print_mac_address();
     wifi_init_global();
@@ -182,10 +187,36 @@ void app_main(void) {
     esp_mqtt_client_start(client);
     
 #else
-    wifi_init_espnow(); 
-    ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
+    wifi_init_espnow();
+
+    // Scan for the AP the host is on, then lock to its channel.
+    // This is the robust way — works across any router change.
+    wifi_scan_config_t scan = {
+        .ssid = (uint8_t *)"RichardL",   // must match host's SSID
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 100,
+        .scan_time.active.max = 300,
+    };
+    ESP_ERROR_CHECK(esp_wifi_scan_start(&scan, true));
+
+    uint16_t n = 1;
+    wifi_ap_record_t ap;
+    if (esp_wifi_scan_get_ap_records(&n, &ap) == ESP_OK && n > 0) {
+        printf(">>> Found AP on channel %d\n", ap.primary);
+        ESP_ERROR_CHECK(esp_wifi_set_channel(ap.primary, WIFI_SECOND_CHAN_NONE));
+    } else {
+        printf(">>> AP scan failed, falling back to ch 6\n");
+        ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
+    }
+    uint8_t prim; wifi_second_chan_t sec;
+    esp_wifi_get_channel(&prim, &sec);
+    printf("C3 actual channel: %d\n", prim);
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_register_recv_cb(on_data_recv));
+    ESP_ERROR_CHECK(esp_now_register_send_cb(c3_send_cb));
     printf("C3 Node ready.\n");
 #endif
     while (1) {
@@ -198,7 +229,8 @@ void app_main(void) {
                     .ax = imu.ax, .ay = imu.ay, .az = imu.az,
                     .gx = imu.gx, .gy = imu.gy, .gz = imu.gz,
                 };
-                esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
+                esp_err_t r = esp_now_send(host_mac, (uint8_t *)&pkt, sizeof(pkt));
+                printf("C3 reply send: %s\n", esp_err_to_name(r));
             } else {
                 printf("IMU not ready\n");
             }
