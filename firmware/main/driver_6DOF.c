@@ -1,66 +1,148 @@
 #include "driver.h"
 #include "led_strip.h"
 #include "driver/i2c.h"
-#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_log.h"
+#include <math.h>
 #include <string.h>
+#include <stdio.h>
+//88:56:a6:2c:5d:24
+static const char *TAG = "6dof_node";
 
-// MAC: 88:56:a6:2c:5d:24
+// ---- pins / bus ----
 #define PIN_LED         10
 #define I2C_SDA         8
 #define I2C_SCL         9
 #define I2C_PORT        I2C_NUM_0
 #define I2C_FREQ_HZ     400000
 
-// LSM9DS1 I2C addresses
-#define LSM_AG_ADDR     0x6B   // Accel/Gyro
-#define LSM_MAG_ADDR    0x1E   // Magnetometer (unused here)
+// ---- LSM6DSOX registers ----
+#define LSM_ADDR_A      0x6A
+#define LSM_ADDR_B      0x6B
+#define REG_WHO_AM_I    0x0F    // expected 0x6C (or 0x6B/0x69 for older LSM6DS3 variants)
+#define REG_CTRL3_C     0x12    // BDU + auto-increment — must write first
+#define REG_CTRL1_XL    0x10    // accel ODR + FS
+#define REG_CTRL2_G     0x11    // gyro  ODR + FS
+#define REG_OUTX_L_G    0x22    // burst start: 12 bytes — GX GY GZ AX AY AZ, little-endian
 
-// LSM9DS1 registers
-#define REG_WHO_AM_I    0x0F   // Should return 0x68
-#define REG_CTRL_REG1_G 0x10   // Gyro ODR/power
-#define REG_CTRL_REG6_XL 0x20  // Accel ODR/power
-#define REG_OUT_X_L_G   0x18   // Gyro X low byte (6 bytes: XL,XH,YL,YH,ZL,ZH)
-#define REG_OUT_X_L_XL  0x28   // Accel X low byte (6 bytes)
+// WHO_AM_I values for LSM6 family
+#define WHO_LSM6DSOX    0x6C
+#define WHO_LSM6DS3TRC  0x6B
+#define WHO_LSM6DS3     0x69
 
-// Sensitivity (from LSM9DS1 datasheet, ±245dps / ±2g defaults)
-#define GYRO_SENS       0.00875f   // dps/LSB
-#define ACCEL_SENS      0.000061f  // g/LSB
+// CTRL3_C = 0x44 -> BDU=1 (atomic read), IF_INC=1 (auto-increment for burst)
+// CTRL1_XL = 0x60 -> ODR 416 Hz, FS ±2g
+// CTRL2_G  = 0x60 -> ODR 416 Hz, FS ±250 dps
+#define CFG_CTRL3_C     0x44
+#define CFG_CTRL1_XL    0x60
+#define CFG_CTRL2_G     0x60
 
+// Scale: multiply raw int16 to get physical units
+#define ACC_SCALE       0.000061f   // g per LSB at ±2g
+#define GYR_SCALE       0.00875f    // dps per LSB at ±250 dps
+
+// ---- EMA filter ----
+static float            alpha     = 0.3f;
+static bool             ema_init  = false;
+
+static imu_data_t latest = {0};
+static imu_data_t ema_state = {0};
+static bool              gyro_enabled = true;
+static uint8_t           imu_addr    = 0;
+
+// ---- LED ----
 static led_strip_handle_t led_strip;
-static bool gyro_enabled = false;
 
-// ── I2C helpers ────────────────────────────────────────────────────────────
+// =================== I2C helpers ===================
 
-static esp_err_t i2c_write_reg(uint8_t addr, uint8_t reg, uint8_t val) {
+static esp_err_t imu_write(uint8_t reg, uint8_t val) {
     uint8_t buf[2] = { reg, val };
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write(cmd, buf, 2, true);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(I2C_PORT, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return err;
+    return i2c_master_write_to_device(I2C_PORT, imu_addr, buf, 2,
+                                      pdMS_TO_TICKS(50));
 }
 
-static esp_err_t i2c_read_regs(uint8_t addr, uint8_t reg, uint8_t *buf, size_t len) {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, reg, true);
-    i2c_master_start(cmd);  // repeated start
-    i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_READ, true);
-    i2c_master_read(cmd, buf, len, I2C_MASTER_LAST_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(I2C_PORT, cmd, pdMS_TO_TICKS(100));
-    i2c_cmd_link_delete(cmd);
-    return err;
+static esp_err_t imu_read(uint8_t reg, uint8_t *data, size_t len) {
+    return i2c_master_write_read_device(I2C_PORT, imu_addr,
+                                        &reg, 1, data, len,
+                                        pdMS_TO_TICKS(50));
 }
 
-// ── Driver interface ────────────────────────────────────────────────────────
+static bool imu_probe(uint8_t addr) {
+    imu_addr = addr;
+    uint8_t who = 0;
+    if (imu_read(REG_WHO_AM_I, &who, 1) != ESP_OK) return false;
+    ESP_LOGI(TAG, "addr 0x%02X -> WHO_AM_I = 0x%02X", addr, who);
+    return (who == WHO_LSM6DSOX ||
+            who == WHO_LSM6DS3TRC ||
+            who == WHO_LSM6DS3);
+}
+
+static esp_err_t imu_setup(void) {
+    // CTRL3_C first — enables BDU and auto-increment before touching other regs
+    ESP_ERROR_CHECK(imu_write(REG_CTRL3_C,  CFG_CTRL3_C));
+    vTaskDelay(pdMS_TO_TICKS(10));
+    ESP_ERROR_CHECK(imu_write(REG_CTRL1_XL, CFG_CTRL1_XL));
+    ESP_ERROR_CHECK(imu_write(REG_CTRL2_G,  CFG_CTRL2_G));
+    vTaskDelay(pdMS_TO_TICKS(20));
+    return ESP_OK;
+}
+
+// =================== sampling ===================
+
+// 12-byte burst from REG_OUTX_L_G:
+//   buf[0..1]  = GX, buf[2..3]  = GY, buf[4..5]  = GZ  (little-endian)
+//   buf[6..7]  = AX, buf[8..9]  = AY, buf[10..11] = AZ  (little-endian)
+static bool read_raw(imu_data_t *out) {
+    uint8_t buf[12];
+    if (imu_read(REG_OUTX_L_G, buf, 12) != ESP_OK) return false;
+
+    int16_t gx = (int16_t)((buf[1]  << 8) | buf[0]);
+    int16_t gy = (int16_t)((buf[3]  << 8) | buf[2]);
+    int16_t gz = (int16_t)((buf[5]  << 8) | buf[4]);
+    int16_t ax = (int16_t)((buf[7]  << 8) | buf[6]);
+    int16_t ay = (int16_t)((buf[9]  << 8) | buf[8]);
+    int16_t az = (int16_t)((buf[11] << 8) | buf[10]);
+
+    out->ax = ax * ACC_SCALE;
+    out->ay = ay * ACC_SCALE;
+    out->az = az * ACC_SCALE;
+    out->gx = gx * GYR_SCALE;
+    out->gy = gy * GYR_SCALE;
+    out->gz = gz * GYR_SCALE;
+    return true;
+}
+
+static void filter_ema(const imu_data_t *in, imu_data_t *out) {
+    if (!ema_init) { *out = *in; ema_init = true; return; }
+    const float a = alpha;
+    const float b = 1.0f - a;
+    out->ax = a * in->ax + b * out->ax;
+    out->ay = a * in->ay + b * out->ay;
+    out->az = a * in->az + b * out->az;
+    out->gx = a * in->gx + b * out->gx;
+    out->gy = a * in->gy + b * out->gy;
+    out->gz = a * in->gz + b * out->gz;
+}
+static void imu_task(void *arg) {
+    imu_data_t raw;
+    TickType_t last = xTaskGetTickCount();
+
+    while (1) {
+        if (gyro_enabled && read_raw(&raw)) {
+            filter_ema(&raw, &ema_state);
+
+            latest = ema_state;   // lock-free write
+        }
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(100)); // 10 Hz
+    }
+}
+
+// =================== PUBLIC API ===================
 
 void driver_init(void) {
-    // LED strip
     led_strip_config_t strip_config = {
         .strip_gpio_num = PIN_LED,
         .max_leds = 1,
@@ -69,8 +151,9 @@ void driver_init(void) {
         .resolution_hz = 10 * 1000 * 1000,
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+    led_strip_clear(led_strip);
 
-    // I2C master
+    // I2C
     i2c_config_t conf = {
         .mode             = I2C_MODE_MASTER,
         .sda_io_num       = I2C_SDA,
@@ -82,20 +165,25 @@ void driver_init(void) {
     ESP_ERROR_CHECK(i2c_param_config(I2C_PORT, &conf));
     ESP_ERROR_CHECK(i2c_driver_install(I2C_PORT, I2C_MODE_MASTER, 0, 0, 0));
 
-    // Verify WHO_AM_I
-    uint8_t who = 0;
-    i2c_read_regs(LSM_AG_ADDR, REG_WHO_AM_I, &who, 1);
-    if (who == 0x68) {
-        printf("LSM9DS1 found (WHO_AM_I=0x%02x)\n", who);
-    } else {
-        printf("WARNING: LSM9DS1 not found (got 0x%02x) — check wiring\n", who);
+    // Probe both possible addresses
+    if      (imu_probe(LSM_ADDR_A)) ESP_LOGI(TAG, "LSM6 at 0x6A");
+    else if (imu_probe(LSM_ADDR_B)) ESP_LOGI(TAG, "LSM6 at 0x6B");
+    else {
+        ESP_LOGE(TAG, "LSM6DSOX not found — check wiring");
+        driver_set_led(0xFF0000);
+        return;
     }
 
-    // Leave both sensors in power-down until explicitly enabled
-    i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0x00);  // gyro off
-    i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0x00);  // accel off
+    ESP_ERROR_CHECK(imu_setup());
 
-    printf("6-DOF Driver Initialized.\n");
+    xTaskCreate(imu_task, "imu_task", 4096, NULL, 5, NULL);
+
+    driver_set_led(0x00FF00);
+    vTaskDelay(pdMS_TO_TICKS(200));
+    driver_set_led(-1);
+
+    ESP_LOGI(TAG, "6-DOF Driver Initialized.");
+    gyro_enabled = true;
 }
 
 void driver_set_led(int32_t hex_color) {
@@ -104,54 +192,35 @@ void driver_set_led(int32_t hex_color) {
     } else {
         uint8_t r = (hex_color >> 16) & 0xFF;
         uint8_t g = (hex_color >> 8)  & 0xFF;
-        uint8_t b = (hex_color)        & 0xFF;
+        uint8_t b = (hex_color)       & 0xFF;
         led_strip_set_pixel(led_strip, 0, r, g, b);
     }
     led_strip_refresh(led_strip);
 }
 
+void driver_set_pwm(int duty_percent) {
+    ESP_LOGW(TAG, "6-DOF node has no PWM capability.");
+}
+
 void driver_set_gyro_mode(bool active) {
     if (active) {
-        // 952 Hz ODR, ±245 dps  (CTRL_REG1_G: ODR=1100, FS=00, BW=00 → 0xC0)a bit lower.
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0x60);
-        // 952 Hz ODR, ±2g       (CTRL_REG6_XL: ODR=1100, FS=00 → 0xC0)a  bit lower.
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0x60);
+        // LSM6 has no sleep bit — re-apply config to restore ODR
+        imu_write(REG_CTRL3_C,  CFG_CTRL3_C);
+        imu_write(REG_CTRL1_XL, CFG_CTRL1_XL);
+        imu_write(REG_CTRL2_G,  CFG_CTRL2_G);
+        ema_init = false; // flush stale filter state
         gyro_enabled = true;
-        printf("IMU enabled.\n");
+        ESP_LOGI(TAG, "IMU enabled.");
     } else {
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0x00);
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0x00);
         gyro_enabled = false;
-        printf("IMU powered down.\n");
+        // ODR=0 in both control regs = powered down
+        imu_write(REG_CTRL1_XL, 0x00);
+        imu_write(REG_CTRL2_G,  0x00);
+        ESP_LOGI(TAG, "IMU powered down.");
     }
 }
-
 bool driver_get_gyro(imu_data_t *out) {
-    if (!gyro_enabled || !out) return false;
-
-    uint8_t buf[6];
-
-    // Gyro (assert MSB for auto-increment: reg | 0x80)
-    if (i2c_read_regs(LSM_AG_ADDR, REG_OUT_X_L_G | 0x80, buf, 6) != ESP_OK) return false;
-    int16_t gx_raw = (int16_t)((buf[1] << 8) | buf[0]);
-    int16_t gy_raw = (int16_t)((buf[3] << 8) | buf[2]);
-    int16_t gz_raw = (int16_t)((buf[5] << 8) | buf[4]);
-    out->gx = gx_raw * GYRO_SENS;
-    out->gy = gy_raw * GYRO_SENS;
-    out->gz = gz_raw * GYRO_SENS;
-
-    // Accel
-    if (i2c_read_regs(LSM_AG_ADDR, REG_OUT_X_L_XL | 0x80, buf, 6) != ESP_OK) return false;
-    int16_t ax_raw = (int16_t)((buf[1] << 8) | buf[0]);
-    int16_t ay_raw = (int16_t)((buf[3] << 8) | buf[2]);
-    int16_t az_raw = (int16_t)((buf[5] << 8) | buf[4]);
-    out->ax = ax_raw * ACCEL_SENS;
-    out->ay = ay_raw * ACCEL_SENS;
-    out->az = az_raw * ACCEL_SENS;
-
-    return true;
-}
-
-void driver_set_pwm(int duty_percent) {
-    printf("Warning: 6-DOF node has no PWM capability.\n");
+    if (!out) return false;
+    *out = latest;
+    return gyro_enabled;
 }

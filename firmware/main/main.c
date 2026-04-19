@@ -88,7 +88,7 @@ void handle_mqtt_message(char *payload) {
             if (sscanf(target->valuestring, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
                 &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]) == 6) {
 
-                esp_now_peer_info_t peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+                esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
                 memcpy(peer.peer_addr, mac, 6);
 
                 if (!esp_now_is_peer_exist(mac)) {
@@ -154,7 +154,7 @@ void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
     memcpy(host_mac, recv_info->src_addr, 6);  // remember host to reply to
     if (!esp_now_is_peer_exist(host_mac)) {
-        esp_now_peer_info_t peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+        esp_now_peer_info_t peer = { .channel = 6, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
         memcpy(peer.peer_addr, host_mac, 6);
         esp_now_add_peer(&peer);
         printf("Registered host peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
