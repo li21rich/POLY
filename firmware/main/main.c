@@ -180,8 +180,10 @@ void app_main(void) {
     }
     
     host_espnow_init();
-    
-    esp_mqtt_client_config_t mqtt_cfg = { .broker.address.uri = "mqtt://54.36.178.49:1883" };
+    // Change your MQTT configuration in firmware
+    esp_mqtt_client_config_t mqtt_cfg = { 
+        .broker.address.uri = "ws://test.mosquitto.org:8080" 
+    };
     esp_mqtt_client_handle_t client = esp_mqtt_client_init(&mqtt_cfg);
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
@@ -192,7 +194,7 @@ void app_main(void) {
     // Scan for the AP the host is on, then lock to its channel.
     // This is the robust way — works across any router change.
     wifi_scan_config_t scan = {
-        .ssid = (uint8_t *)"RichardL",   // must match host's SSID
+        .ssid = (uint8_t *)"StarkHacks-2",   // must match host's SSID
         .bssid = NULL,
         .channel = 0,
         .show_hidden = false,
@@ -208,8 +210,8 @@ void app_main(void) {
         printf(">>> Found AP on channel %d\n", ap.primary);
         ESP_ERROR_CHECK(esp_wifi_set_channel(ap.primary, WIFI_SECOND_CHAN_NONE));
     } else {
-        printf(">>> AP scan failed, falling back to ch 6\n");
-        ESP_ERROR_CHECK(esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE));
+        printf(">>> AP scan failed, falling back to ch 11\n");
+        ESP_ERROR_CHECK(esp_wifi_set_channel(11, WIFI_SECOND_CHAN_NONE));
     }
     uint8_t prim; wifi_second_chan_t sec;
     esp_wifi_get_channel(&prim, &sec);
