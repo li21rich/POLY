@@ -21,7 +21,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-#define BUILD_AS_HOST
+//#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
@@ -153,6 +153,14 @@ void imu_stream_task(void *arg) {
 void on_data_recv(const esp_now_recv_info_t *recv_info, const uint8_t *data, int len) {
     if (len < (int)sizeof(espnow_packet_t)) { printf("Packet too short\n"); return; }
     memcpy(host_mac, recv_info->src_addr, 6);  // remember host to reply to
+    if (!esp_now_is_peer_exist(host_mac)) {
+        esp_now_peer_info_t peer = { .channel = 0, .encrypt = false, .ifidx = ESP_IF_WIFI_STA };
+        memcpy(peer.peer_addr, host_mac, 6);
+        esp_now_add_peer(&peer);
+        printf("Registered host peer: %02x:%02x:%02x:%02x:%02x:%02x\n",
+            host_mac[0], host_mac[1], host_mac[2],
+            host_mac[3], host_mac[4], host_mac[5]);
+    }
     espnow_packet_t *packet = (espnow_packet_t *)data;
     printf("DEBUG: Received Cmd: %d, Val: %d\n", (int)packet->cmd_type, (int)packet->val);
     switch(packet->cmd_type) {

@@ -112,12 +112,12 @@ void driver_set_led(int32_t hex_color) {
 
 void driver_set_gyro_mode(bool active) {
     if (active) {
-        // 952 Hz ODR, ±245 dps  (CTRL_REG1_G: ODR=1100, FS=00, BW=00 → 0xC0)
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0xC0);
-        // 952 Hz ODR, ±2g       (CTRL_REG6_XL: ODR=1100, FS=00 → 0xC0)
-        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0xC0);
+        // 952 Hz ODR, ±245 dps  (CTRL_REG1_G: ODR=1100, FS=00, BW=00 → 0xC0)a bit lower.
+        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0x60);
+        // 952 Hz ODR, ±2g       (CTRL_REG6_XL: ODR=1100, FS=00 → 0xC0)a  bit lower.
+        i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0x60);
         gyro_enabled = true;
-        printf("IMU enabled (952 Hz).\n");
+        printf("IMU enabled.\n");
     } else {
         i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG1_G,  0x00);
         i2c_write_reg(LSM_AG_ADDR, REG_CTRL_REG6_XL, 0x00);
