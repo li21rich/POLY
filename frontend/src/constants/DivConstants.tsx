@@ -1,4 +1,6 @@
-import ESP32Img from "../assets/esp32.png";
+import POLYSENSE from "../assets/sens.jpg";
+import POLYONE from "../assets/abc.jpg";
+import POLYHOST from "../assets/host.jpg";
 import POLYTWOS from "../assets/image-removebg-preview.png";
 
 export interface ProjectPanel {
@@ -11,17 +13,17 @@ export interface ProjectPanel {
 export const PORTFOLIO_PROJECTS: ProjectPanel[] = [
   {
     title: "POLY Host",
-    image: ESP32Img,
+    image: POLYHOST,
     stack: ["Wi-Fi", "LED", "Button"],
   },
   {
     title: "POLY One",
-    image: ESP32Img,
+    image: POLYONE,
     stack: ["Servo", "LED", "Button"],
   },
   {
     title: "Poly Sense",
-    image: ESP32Img,
+    image: POLYSENSE,
     stack: ["3-DOF Gyro", "3-DOF Accel", "LED", "Button"],
   },
   {
