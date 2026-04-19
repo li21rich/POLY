@@ -18,10 +18,12 @@ const Home = () => {
       <ReactiveNodeBackground />
       <SlideIn direction="top" delay={200} duration={2000} className="z-10 relative">
         <div className="relative ml-32 text-primary-reddish">
-          <h1 className="text-[300px] font-bold">POLY</h1>
+          <h1 className="text-[300px] font-bold italic" style={{ fontFamily: 'Roboto, sans-serif' }}>
+          POLY
+        </h1>
           <p className="text-[25px] text-right mr-48">
             <span className="font-bold text-[35px]"> engineering for everyone</span>
-            <br />(even your mom)
+            <br />(even your grandpa)
           </p>
         </div>
       </SlideIn>
