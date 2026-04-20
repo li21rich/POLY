@@ -26,7 +26,7 @@ typedef struct {
     float gx, gy, gz;
 } imu_packet_t;
 
-//#define BUILD_AS_HOST
+#define BUILD_AS_HOST
 
 void print_mac_address(void) {
     uint8_t mac[6];
